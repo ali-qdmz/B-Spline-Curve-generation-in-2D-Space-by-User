@@ -1,0 +1,896 @@
+from OpenGL.GLUT import *
+from OpenGL.GLU import *
+from OpenGL.GL import *
+from numpy import floor, ceil
+from OpenGL.GL import *
+import numpy as np
+
+
+BUFFER_SIZE =128
+DEFAULT_PRECISION =40
+SCR_X =640
+SCR_Y =480
+
+#==================================================================================================
+
+class BSpline:
+    
+    def __init__(self):
+        self.delta = 100
+        self.degree = 2
+        self.ctrlpts = []
+        self.weights = 0
+        
+    def evalpts(self , cv, n, d, closed=False):
+            # Create a range of u values
+        count = len(cv)
+        knots = None
+        u = None
+        if not closed:
+            u = np.arange(0,n,dtype='float')/(n-1) * (count-d)
+            knots = np.array([0]*d + range(count-d+1) + [count-d]*d,dtype='int')
+        else:
+            u = ((np.arange(0,n,dtype='float')/(n-1) * count) - (0.5 * (d-1))) % count # keep u=0 relative to 1st cv
+            knots = np.arange(0-d,count+d+d-1,dtype='int')
+
+
+        # Simple Cox - DeBoor recursion
+        def coxDeBoor(u, k, d):
+
+            # Test for end conditions
+            if (d == 0):
+                if (knots[k] <= u and u < knots[k+1]):
+                    return 1
+                return 0
+
+            Den1 = knots[k+d] - knots[k]
+            Den2 = knots[k+d+1] - knots[k+1]
+            Eq1  = 0;
+            Eq2  = 0;
+
+            if Den1 > 0:
+                Eq1 = ((u-knots[k]) / Den1) * coxDeBoor(u,k,(d-1))
+            if Den2 > 0:
+                Eq2 = ((knots[k+d+1]-u) / Den2) * coxDeBoor(u,(k+1),(d-1))
+
+            return Eq1 + Eq2
+
+
+        # Sample the curve at each u value
+        samples = np.zeros((n,2))
+        for i in xrange(n):
+            if not closed:
+                if u[i] == count-d:
+                    samples[i] = np.array(cv[-1])
+                else:
+                    for k in xrange(count):
+                        samples[i] += coxDeBoor(u[i],k,d) * cv[k]
+
+            else:
+                for k in xrange(count+d):
+                    samples[i] += coxDeBoor(u[i],k,d) * cv[k%count]
+
+
+        return samples
+
+    
+
+    
+    
+#==================================================================================================    
+    
+    
+class NURBS:
+    
+    def __init__(self):
+        self.delta = 100
+        self.degree = 2
+        self.ctrlpts = []
+        self.weights = []
+        
+    def evalpts(self , cv, n, d, closed=False,weights=[]):
+            # Create a range of u values
+        count = len(cv)
+        knots = None
+        u = None
+        if not closed:
+            u = np.arange(0,n,dtype='float')/(n-1) * (count-d)
+            knots = np.array([0]*d + range(count-d+1) + [count-d]*d,dtype='int')
+        else:
+            u = ((np.arange(0,n,dtype='float')/(n-1) * count) - (0.5 * (d-1))) % count # keep u=0 relative to 1st cv
+            knots = np.arange(0-d,count+d+d-1,dtype='int')
+
+
+        # Simple Cox - DeBoor recursion
+        def coxDeBoor(u, k, d):
+
+            # Test for end conditions
+            if (d == 0):
+                if (knots[k] <= u and u < knots[k+1]):
+                    return 1
+                return 0
+
+            Den1 = knots[k+d] - knots[k]
+            Den2 = knots[k+d+1] - knots[k+1]
+            Eq1  = 0;
+            Eq2  = 0;
+
+            if Den1 > 0:
+                Eq1 = ((u-knots[k]) / Den1) * coxDeBoor(u,k,(d-1))
+            if Den2 > 0:
+                Eq2 = ((knots[k+d+1]-u) / Den2) * coxDeBoor(u,(k+1),(d-1))
+
+            return Eq1 + Eq2
+
+
+        # Sample the curve at each u value
+        samples = np.zeros((n,2))
+        samples_2 = np.zeros((n,2))
+        for i in xrange(n):
+            if not closed:
+                if u[i] == count-d:
+                    samples[i] = np.array(cv[-1])
+                else:
+                    for k in xrange(count):
+                        samples_2[i] += coxDeBoor(u[i],k,d) * weights[k]
+
+                    for k in xrange(count):
+                        samples[i] += (coxDeBoor(u[i],k,d) * cv[k] * weights[k])/samples_2[i]
+
+            else:
+                for k in xrange(count+d):
+                    samples_2[i] += coxDeBoor(u[i],k,d) * weights[k%count]
+                
+                for k in xrange(count+d):
+                    samples[i] += (coxDeBoor(u[i],k,d) * cv[k%count] * weights[k%count])/samples_2[i]
+
+
+        return samples
+    
+    
+    
+#==================================================================================================    
+    
+class point:
+    def __init__ (self,_x=0.0,_y=0.0,_r=0.0,_g=0.0,_b=1.0):
+        self.x = _x 
+        self.y = _y 
+        self.r = _r 
+        self.g = _g 
+        self.b = _b 
+    def draw_point(self):
+        glColor3f(self.r,self.g,self.b) 
+        glBegin(GL_POINTS) 
+        glVertex2f(self.x,self.y) 
+        glEnd() 
+    def move(self, mx,  my):
+        self.x += mx 
+        self.y += my 
+    def set_color(self, _r,  _g,  _b):
+        self.r = _r 
+        self.g = _g 
+        self.b = _b 
+
+#==================================================================================================
+
+class selection:
+    def __init__(self,newlist=[]):
+        self.mylist=newlist 
+    def add_point(self,mypoint):
+        if mypoint in self.mylist: return 
+        self.mylist.append(mypoint) 
+        mypoint.set_color(1.0,0.0,0.0) 
+    def remove_point(self,mypoint):
+        self.mylist.remove(mypoint) 
+        mypoint.set_color(0.0,0.0,1.0)
+    def find(self,mypoint):
+        if mypoint in self.mylist: return True 
+        return False 
+    def clear(self):
+        for mypoint in self.mylist:
+            mypoint.set_color(0.0,0.0,1.0)            
+        self.mylist=[]
+    def move(self, mx,  my):
+        for mypoint in self.mylist:
+            mypoint.move(mx,my)
+    def add_selection (self, myselection):
+        for mypoint in myselection.mylist:
+            self.add_point(mypoint)
+        myselection.mylist=[]
+
+#==================================================================================================
+
+class point_list:
+    def __init__(self, newlist=[]):
+        self.mylist=newlist
+    def draw_all_point(self, mod=GL_RENDER ):
+        for index, mypoint in enumerate(self.mylist):
+            if(mod==GL_SELECT): glLoadName(index)
+            mypoint.draw_point()
+    def draw_point(self,which): 
+        self.mylist[wich].draw_point() 
+    def get_point(self,which):
+        return self.mylist[which]
+    def add_point(self,mypoint):
+        self.mylist.append(mypoint)
+    def remove_point(self,mypoint):
+        del self.mylist[mypoint]
+
+
+#==================================================================================================
+def spline_uniform( t,  x):
+    t -= float(2.0) 
+    if ((x < t+1.0) and  (x >= t)):
+        return pow(x - t,3)/6.0 
+    elif ((x < t+2.0) and (x >= t+1.0)) :
+        return  1.0/6.0 * (3.0*t*t*t-3.0*t*t*(3.0*x-4.0)+3.0*t*(3.0*x*x-8.0*x+4.0)-3.0*x*x*x+12.0*x*(x-1.0)+4.0) 
+    elif ((x < t+3.0) and (x >= t+2.0)) :
+        return -1.0/6.0 * (3.0*t*t*t-3.0*t*t*(3.0*x-8.0)+3.0*t*(3.0*x*x-16.0*x+20.0)-3.0*x*x*x+24.0*x*x-60.0*x+44.0) 
+    elif ((x < t+4.0) and (x >= t+3.0)) :
+        return  1.0/6.0 * (t*t*t - 3.0*t*t*(x-4.0)+3.0*t*(x*x-8.0*x+16.0)-x*x*x+12.0*x*x-48.0*x+64.0) 
+    else:
+        return 0.0 
+weightss = []
+buff1 = []
+order = 1
+delta = 0.05
+
+#==================================================================================================
+class Nurbs_curve:
+    def __init__ (self, which=point_list()):
+        self.plist = which 
+        self.curve_point = [] 
+        self.nb_curve_point = 0 
+        self.nb_point = len(self.plist.mylist) 
+        self.precision = DEFAULT_PRECISION 
+        self.draw_number = True 
+        self.draw_rep = True 
+        self.rep_point = []
+        self.points = []
+        self.weights = []
+        self.l = []
+        self.order = 0
+        self.delta = 0
+    def compute(self):
+        global weightss
+        #print(weightss)
+        global order
+        global delta
+        self.points = []
+        self.weights = weightss
+        self.order = order
+        self.delta = delta
+        global crv
+        crv = NURBS()
+        for i in range(len(self.plist.mylist)):
+            x = self.plist.mylist[i].x
+            y = self.plist.mylist[i].y
+            self.points.append([x,y])
+        if (len(self.points) >=2):
+            if self.order != 0:
+                crv.degree = self.order
+            else:
+                crv.degree = len(self.points) - 1
+                
+            if self.delta != 0:
+                crv.delta =  int(1.0/self.delta)
+            else:
+                crv.delta = 100
+            crv.ctrlpts = self.points
+            #print(self.weights)
+            if self.weights != []:
+                crv.weights = self.weights
+            else:
+                x = np.arange(len(self.points))
+                x.fill(1)
+                crv.weights = x
+
+            if len(self.points) > 1:
+                x = np.array(self.points)
+                self.l = crv.evalpts(cv=x, n=crv.delta, d=crv.degree, closed=False ,weights=crv.weights)
+            #print(l)
+        
+
+        
+        if (self.curve_point != []) : self.curve_point=[] 
+        if (self.rep_point != []) : self.rep_point=[] 
+        self.nb_curve_point = self.precision + 1 
+        u=1.0
+        p = (float(self.nb_point-3.0))/float(self.precision) 
+        for i in range(self.nb_curve_point):
+            self.curve_point.append(point()) 
+            tx = 0.0 
+            ty = 0.0
+            for j in range(1,len(self.plist.mylist) +1): 
+                tb = spline_uniform(j-1,u) 
+                tx += tb*self.plist.mylist[j-1].x 
+                ty += tb*self.plist.mylist[j-1].y 
+            tb = 0 
+            u += p 
+            self.curve_point[i].x = tx
+            self.curve_point[i].y = ty
+        u=1.0 
+        for i in range(self.nb_point-2):
+            self.rep_point.append(point()) 
+            tx = 0.0 
+            ty = 0.0 
+            tb = 0.00 
+            for j in range(1,len(self.plist.mylist)+1):
+                tb = spline_uniform(j-1,u) 
+                tx += tb*self.plist.mylist[j-1].x 
+                ty += tb*self.plist.mylist[j-1].y 
+            tb = 0.0 
+            u += 1.0 
+            self.rep_point[i].x = tx 
+            self.rep_point[i].y = ty 
+    def draw(self):
+        #print(self.l)
+        glColor3f(0.0,0.0,1.0) 
+        glBegin(GL_LINE_STRIP) 
+        for  i in range(len(self.l)):
+            glVertex2f(self.l[i][0], self.l[i][1]) 
+        glEnd() 
+        if (self.draw_number):
+            glColor3f(0.0,0.0,0.0) 
+            for i in range(len(self.plist.mylist)):
+                glRasterPos2f(self.plist.mylist[i].x - 8.0, self.plist.mylist[i].y + 8.0) 
+                ch=repr(int(i)) 
+                drawString(ch) 
+        if (self.draw_rep):
+            glColor3f(1.0,0.0,0.0) 
+            glPointSize(3.0) 
+            glBegin(GL_POINTS) 
+            for  i in range(len(self.plist.mylist)-2): glVertex2f(self.rep_point[i].x, self.rep_point[i].y) 
+            glEnd() 
+            glPointSize(4.0) 
+
+    def Inc_Precision(self):  self.precision *= 2.0  
+    def Dec_Precision(self):  self.precision = int(ceil(float(self.precision/2.0))) 
+    def Toggle_Number(self):
+        self.draw_number = not self.draw_number 
+        return self.draw_number 
+    def Toggle_Rep(self):
+        self.draw_rep = not self.draw_rep 
+        return self.draw_rep 
+    
+
+
+
+
+    
+    
+    
+    
+    
+    
+    
+weightss_sp = []
+buff1_sp = []
+order_sp = 1
+delta_sp = 0
+
+#==================================================================================================
+class Spline_curve:
+    def __init__ (self, which=point_list()):
+        self.plist = which 
+        self.curve_point = [] 
+        self.nb_curve_point = 0 
+        self.nb_point = len(self.plist.mylist) 
+        self.precision = DEFAULT_PRECISION 
+        self.draw_number = True 
+        self.draw_rep = True 
+        self.rep_point = []
+        self.points = []
+        self.weights = []
+        self.l = []
+        self.order = 0
+        self.delta = 0
+    def compute(self):
+        global weightss_sp
+        #print(weightss)
+        global order_sp
+        global delta_sp
+        self.points = []
+        self.weights = weightss_sp
+        self.order = order_sp
+        self.delta = delta_sp
+        global crv_sp
+        crv_sp = BSpline()
+        for i in range(len(self.plist.mylist)):
+            x = self.plist.mylist[i].x
+            y = self.plist.mylist[i].y
+            self.points.append([x,y])
+        if (len(self.points) >=2):
+            if self.order != 0:
+                crv_sp.degree = self.order
+            else:
+                crv_sp.degree = len(self.points) - 1
+                
+            if self.delta != 0:
+                crv_sp.delta = int(1.0/self.delta)
+            else:
+                crv_sp.delta = 100
+
+                        
+            #print(self.weights)
+            #crv.delta = float(input("insert delta value : "))
+            #print(crv.evalpts)
+        #x = [[0.,0.],[0.00784003, 0.00796001],[0.03478321, 0.03754274]]
+        if len(self.points) > 1:
+            x = np.array(self.points)
+            self.l = crv_sp.evalpts(cv=x, n=crv_sp.delta, d=crv_sp.degree, closed=False)
+        #print(y)
+        
+
+        
+        if (self.curve_point != []) : self.curve_point=[] 
+        if (self.rep_point != []) : self.rep_point=[] 
+        self.nb_curve_point = self.precision + 1 
+        u=1.0
+        p = (float(self.nb_point-3.0))/float(self.precision) 
+        for i in range(self.nb_curve_point):
+            self.curve_point.append(point()) 
+            tx = 0.0 
+            ty = 0.0
+            for j in range(1,len(self.plist.mylist) +1): 
+                tb = spline_uniform(j-1,u) 
+                tx += tb*self.plist.mylist[j-1].x 
+                ty += tb*self.plist.mylist[j-1].y 
+            tb = 0 
+            u += p 
+            self.curve_point[i].x = tx
+            self.curve_point[i].y = ty
+        u=1.0 
+        for i in range(self.nb_point-2):
+            self.rep_point.append(point()) 
+            tx = 0.0 
+            ty = 0.0 
+            tb = 0.00 
+            for j in range(1,len(self.plist.mylist)+1):
+                tb = spline_uniform(j-1,u) 
+                tx += tb*self.plist.mylist[j-1].x 
+                ty += tb*self.plist.mylist[j-1].y 
+            tb = 0.0 
+            u += 1.0 
+            self.rep_point[i].x = tx 
+            self.rep_point[i].y = ty 
+    def draw(self):
+        #print(self.l)
+        glColor3f(1.0,0.0,3.0) 
+        glBegin(GL_LINE_STRIP) 
+        for  i in range(len(self.l)):
+            glVertex2f(self.l[i][0], self.l[i][1]) 
+        glEnd() 
+        if (self.draw_number):
+            glColor3f(0.0,0.0,0.0) 
+            for i in range(len(self.plist.mylist)):
+                glRasterPos2f(self.plist.mylist[i].x - 8.0, self.plist.mylist[i].y + 8.0) 
+                ch=repr(int(i)) 
+                drawString(ch) 
+        if (self.draw_rep):
+            glColor3f(1.0,0.0,0.0) 
+            glPointSize(3.0) 
+            glBegin(GL_POINTS) 
+            for  i in range(len(self.plist.mylist)-2): glVertex2f(self.rep_point[i].x, self.rep_point[i].y) 
+            glEnd() 
+            glPointSize(4.0) 
+
+    def Inc_Precision(self):  self.precision *= 2.0  
+    def Dec_Precision(self):  self.precision = int(ceil(float(self.precision/2.0))) 
+    def Toggle_Number(self):
+        self.draw_number = not self.draw_number 
+        return self.draw_number 
+    def Toggle_Rep(self):
+        self.draw_rep = not self.draw_rep 
+        return self.draw_rep     
+    
+
+
+
+pt_list= point_list() 
+sl_list=selection()
+sweep_list=selection()
+
+mouse_x=100
+mouse_y=100
+show_bezier = False 
+show_spline = False 
+show_cat = False 
+
+
+s_curve = Nurbs_curve(point_list()) 
+s_sp_curve = Spline_curve(point_list()) 
+
+
+last_point_added = -1 
+
+
+left_button_pressed = False 
+something_clicked = False  
+point_has_moved = False  
+ctrl_pressed = False 
+shift_pressed = False 
+
+selected = False
+sl_x1 = 0.0 
+sl_y1 = 0.0 
+
+def drawString (s):
+    for i in s:
+        glutBitmapCharacter (GLUT_BITMAP_HELVETICA_10, ord(i))
+
+def reshape( w,  h):
+    glViewport(0, 0, w, h) 
+    glMatrixMode(GL_PROJECTION) 
+    glLoadIdentity() 
+    gluOrtho2D(0.0, w, 0.0, h) 
+    glMatrixMode(GL_MODELVIEW) 
+    
+
+def display():
+    glClear(GL_COLOR_BUFFER_BIT) 
+    pt_list.draw_all_point()  
+    if (show_spline): s_curve.draw() 
+    if (True): s_sp_curve.draw() 
+    
+    viewport=glGetIntegerv (GL_VIEWPORT) 
+    if (selected) :
+        glBegin(GL_QUADS) 
+        glColor4f(0.0,0.0,1.0,0.4) 
+        glVertex2f(sl_x1,sl_y1) 
+        glVertex2f(mouse_x,sl_y1) 
+        glColor4f(0.0,0.0,1.0,0.2) 
+        glVertex2f(mouse_x,viewport[3] - mouse_y) 
+        glVertex2f(sl_x1,viewport[3] - mouse_y) 
+        glEnd() 
+        glColor4f(0.0,0.0,1.0,0.8) 
+        glBegin(GL_LINE_LOOP) 
+        glVertex2f(sl_x1,sl_y1) 
+        glVertex2f(mouse_x,sl_y1) 
+        glVertex2f(mouse_x,viewport[3] - mouse_y) 
+        glVertex2f(sl_x1,viewport[3] - mouse_y) 
+        glEnd() 
+        glColor4f(0.0,0.0,1.0,1.0) 
+    glColor3f(0.0, 0.0, 0.0) 
+    glRasterPos2i(5, viewport[3] - 10) 
+    pos=repr(mouse_x) 
+    drawString(pos) 
+    glRasterPos2i(5, viewport[3] - 20) 
+    pos=repr(mouse_y) 
+    drawString(pos) 
+    glutSwapBuffers() 
+    glFlush() 
+
+junky = 0
+def Mouse( button,  state,  x,  y):
+    global pt_list 
+    global sl_list
+    global sweep_list
+    global mouse_x
+    global mouse_y 
+    global show_spline 
+    global s_curve
+    global s_sp_curve
+    global last_point_added 
+    global left_button_pressed 
+    global something_clicked 
+    global point_has_moved 
+    global ctrl_pressed 
+    global shift_pressed
+    global selected 
+    global sl_x1 
+    global sl_y1 
+    global weightss
+    global order
+    global order_sp
+    global junky
+    if(button == GLUT_MIDDLE_BUTTON and state == GLUT_DOWN):
+        if junky > 1:
+            order = order + 1
+            order_sp = order_sp + 1
+        #drawPoint(x,y)
+        weightss.append(1.0)
+        y = 480 - y
+        #print(x,y)
+        pt_list.add_point( point(float(x),float(y))) 
+        s_curve = Nurbs_curve(pt_list) 
+        s_curve.compute()
+        s_sp_curve = Spline_curve(pt_list) 
+        s_sp_curve.compute()
+        #weights.append(float(input("insert weight")))
+        #glClear(GL_COLOR_BUFFER_BIT)
+        glColor3f(0.0,0.0,1.0)
+        glPointSize(10)
+        glBegin(GL_POINTS)
+        glVertex2f(x , y)
+        glEnd()
+        junky = junky + 1
+
+
+    
+    
+    
+    
+    mouse_x = x 
+    mouse_y = y 
+    shift_pressed = False 
+    ctrl_pressed = False 
+    if glutGetModifiers()==GLUT_ACTIVE_SHIFT: 
+        shift_pressed = True 
+    elif glutGetModifiers()==GLUT_ACTIVE_CTRL:
+        ctrl_pressed = True 
+    viewport=glGetIntegerv (GL_VIEWPORT) 
+    glSelectBuffer(BUFFER_SIZE)
+    glRenderMode(GL_SELECT)
+    glInitNames()
+    glPushName(10000)  
+    glMatrixMode(GL_PROJECTION) 
+    glPushMatrix()
+    glLoadIdentity() 
+    gluPickMatrix(x, (viewport[3] - y), 5.0, 5.0, viewport)
+    gluOrtho2D(0.0, viewport[2], 0.0, viewport[3])
+    pt_list.draw_all_point(GL_SELECT) 
+    glMatrixMode(GL_PROJECTION) 
+    glPopMatrix() 
+    glFlush() 
+    tampon = glRenderMode(GL_RENDER)
+    nb_int= len(tampon)
+    if nb_int==0:
+        name=[]
+    else:
+        zmin, zmax, name=tampon[0]
+    something_clicked = False 
+    sl_x1 = mouse_x 
+    sl_y1 = float(viewport[3] - mouse_y)
+
+
+    if ((button == GLUT_LEFT_BUTTON)  and  (state == GLUT_DOWN)) :left_button_pressed = True 
+    if ((button == GLUT_LEFT_BUTTON)  and  (state == GLUT_UP)): left_button_pressed = False 
+    if ((nb_int == 0)  and  (not selected)):
+        if ((button == GLUT_LEFT_BUTTON)  and  (state == GLUT_DOWN)   and  (not shift_pressed)):
+            if  (not ctrl_pressed):
+                sl_list.clear()  
+        glutPostRedisplay() 
+        return
+    if ((button == GLUT_LEFT_BUTTON)  and  (state == GLUT_DOWN)):
+        if (not shift_pressed): sl_list.clear()
+        if (not sl_list.find(pt_list.get_point(name[0]))): 
+            sl_list.add_point(pt_list.get_point(name[0])) 
+            last_point_added = name[0]  
+        something_clicked = True 
+    if ((button == GLUT_LEFT_BUTTON)  and  (state == GLUT_UP)  and  (not selected)  and  (last_point_added != int(name[0]))  and  (sl_list.find(pt_list.get_point(name[0])))  and  (not point_has_moved)):
+        sl_list.remove_point(pt_list.get_point(name[0])) 
+    elif ((button == GLUT_LEFT_BUTTON)  and  (state == GLUT_UP)  and  (selected)): 
+        sl_list.add_selection(sweep_list) 
+    if ((button == GLUT_LEFT_BUTTON)  and  (state == GLUT_UP)): last_point_added = -1  
+    selected = False 
+    point_has_moved = False 
+    glutPostRedisplay()   
+
+def MotionMouse( x,  y):
+    global pt_list 
+    global sl_list
+    global sweep_list
+    global mouse_x
+    global mouse_y 
+    global show_spline 
+    global s_curve
+    global s_sp_curve
+    global last_point_added 
+    global left_button_pressed 
+    global something_clicked 
+    global point_has_moved 
+    global ctrl_pressed 
+    global shift_pressed
+    global selected 
+    global sl_x1 
+    global sl_y1 
+
+    
+    selected = False 
+    point_has_moved = False 
+    if ((left_button_pressed)  and  ((something_clicked) or (ctrl_pressed))) :
+        sl_list.move(float(x-mouse_x), -float(y-mouse_y)) 
+        point_has_moved = True 
+
+        if globals().has_key('b_curve'): b_curve.compute()
+        if globals().has_key('s_curve'):
+            s_curve.compute()
+            s_sp_curve.compute()
+        if globals().has_key('c_curve'): c_curve.compute()  
+    elif ((left_button_pressed)  and  (not something_clicked)  and  (not ctrl_pressed)) :
+
+        selected = True 
+
+        viewport=glGetIntegerv (GL_VIEWPORT) 
+        if ((sl_x1-mouse_x != 0.0)  and  (sl_y1-(viewport[3] - mouse_y) != 0.0)):
+            sweep_list.clear() 
+            glSelectBuffer(BUFFER_SIZE) 
+            glRenderMode(GL_SELECT) 
+            glInitNames() 
+            glPushName(10000) 
+            glMatrixMode(GL_PROJECTION) 
+            glPushMatrix() 
+            glLoadIdentity() 
+            gluPickMatrix((sl_x1+mouse_x)/2.0, (sl_y1+(viewport[3] - mouse_y))/2.0, abs(sl_x1-mouse_x), abs(sl_y1-(viewport[3]-mouse_y)), viewport)  # on détecte tous ce qui se trouve dans la zone de sélection
+            gluOrtho2D(0.0, viewport[2], 0.0, viewport[3]) 
+            pt_list.draw_all_point(GL_SELECT) 
+            glMatrixMode(GL_PROJECTION) 
+            glPopMatrix() 
+            glFlush() 
+            tampon = glRenderMode(GL_RENDER) 
+            nb_int= len(tampon)            
+            for  hits in tampon:
+                zmin, zmax, name=hits
+
+                sweep_list.add_point(pt_list.get_point(name[0]))
+
+    mouse_x = x 
+    mouse_y = y 
+    glutPostRedisplay() 
+
+   
+def glut_spline_menu(i):
+
+    global s_curve
+
+    if i == 1:
+        s_curve.Inc_Precision() 
+        s_curve.compute() 
+        #break 
+    elif i== 2:
+        s_curve.Dec_Precision() 
+        s_curve.compute() 
+    elif i== 3:
+        if (s_curve.Toggle_Number()):
+            glutChangeToMenuEntry(3, "Masquer numéros", 3) 
+        else :
+            glutChangeToMenuEntry(3, "Afficher numéros", 3) 
+    elif i== 4:
+        if (s_curve.Toggle_Rep()) :
+            glutChangeToMenuEntry(4, "Masquer repères", 4) 
+        else:
+            glutChangeToMenuEntry(4, "Afficher repères", 4) 
+    glutPostRedisplay() 
+
+    
+ 
+def glut_main_menu(i):
+ 
+    global show_spline 
+    global s_curve
+
+
+    
+    if i == 7: 
+        del s_curve  
+        exit(0)  
+    elif i== 5:
+        if (show_spline ):
+            show_spline = not show_spline
+            glutChangeToMenuEntry(5, "Masquer courbe Spline",5) 
+        else:
+            show_spline = not show_spline
+            glutChangeToMenuEntry(5, "Afficher courbe Spline", 5) 
+    glutPostRedisplay() 
+
+
+    
+def keyPressed(key, x, y):
+    global weightss
+    global s_curve
+    global s_sp_curve
+    global pt_list
+    global crv
+    global crv_sp
+    global order
+    global order_sp
+    global delta
+    global delta_sp
+    if key == 'w':
+        n = input("insert point number :")
+        w = input("insert point weight")
+        #print(crv.weights[1])
+        weightss = crv.weights
+        weightss[n] = w
+        s_curve.compute()
+        #s_curve.draw()
+        print('hi')
+        
+    if key == 'p':
+        s = input("insert number of point to delete:")
+        order = crv.degree
+        order_sp = crv_sp.degree
+        if order_sp>1:
+            order_sp = order_sp - 1
+        if order>1:
+            order = order-1
+        del crv.weights[s]
+        pt_list.remove_point(s)
+        s_curve.compute()
+        s_sp_curve.compute()
+        #s_curve.draw()
+        print('hi')
+        
+    if key == 'o':
+        t = input("insert equation order :")
+        order = crv.degree
+        order = int(t)
+        order_sp = int(t)
+        s_curve.compute()
+        s_sp_curve.compute()
+        #s_curve.draw()
+        print('hi')
+        
+    if key == 'd':
+        d = input("insert equation delta :")
+        delta = crv.delta
+        delta = float(d)
+        delta_sp = float(d)
+        s_curve.compute()
+        s_sp_curve.compute()
+        #s_curve.draw()
+        print('hi')
+    
+    
+    
+    
+def main():
+    global pt_list 
+    global sl_list
+    global sweep_list
+    global mouse_x
+    global mouse_y 
+    global show_spline  
+    global s_curve
+    global last_point_added 
+    global left_button_pressed 
+    global something_clicked 
+    global point_has_moved 
+    global ctrl_pressed 
+    global shift_pressed
+    global selected 
+    global sl_x1 
+    global sl_y1 
+
+  
+
+
+    glutInit(sys.argv) 
+    glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA) 
+    glutInitWindowSize(SCR_X,SCR_Y) 
+    glutInitWindowPosition(100,100) 
+    glutCreateWindow("Catmul-Rom") 
+    
+
+
+    glClearColor(1.0, 1.0, 1.0, 0.0) 
+    
+    glEnable(GL_LINE_SMOOTH) 
+    glEnable(GL_BLEND) 
+    #glEnable(GL_COLOR) 
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA) 
+    
+    glPointSize(4.0) 
+    
+
+
+    glutDisplayFunc(display) 
+    glutReshapeFunc(reshape) 
+    #glutIdleFunc(Idle) 
+    glutMouseFunc(Mouse) 
+    glutMotionFunc(MotionMouse) 
+    glutKeyboardFunc(keyPressed)
+    main_menu = glutCreateMenu(glut_main_menu) 
+
+
+
+    glutAddMenuEntry("show spline curve", 5) 
+
+    glutAttachMenu(GLUT_RIGHT_BUTTON)
+  
+    glutMainLoop() 
+    
+
+
+main()
